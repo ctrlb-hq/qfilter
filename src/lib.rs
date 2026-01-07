@@ -897,13 +897,47 @@ impl Filter {
     #[cold]
     #[inline(never)]
     fn calc_offset(&self, block_num: u64) -> u64 {
-        // The block offset can be calculated as the difference between its position and runstart.
-        let block_start = (block_num * 64) % self.total_buckets();
-        let mut run_start = self.run_start(block_start);
-        if run_start < block_start {
-            run_start += self.total_buckets().get();
+        if block_num == 0 {
+            return 0;
         }
-        run_start - block_start
+        
+        let mut total_occupied: u64 = 0;
+        let mut total_runends: u64 = 0;
+        
+        for b in 0..block_num {
+            let raw = self.raw_block(b);
+            total_occupied += raw.occupieds.count_ones() as u64;
+            total_runends += raw.runends.count_ones() as u64;
+        }
+        
+        let open_runs = total_occupied.saturating_sub(total_runends);
+        
+        if open_runs == 0 {
+            return 0;
+        }
+        
+        let mut remaining = open_runs;
+        let mut search_block = block_num;
+        let total_blocks = self.total_blocks().get();
+        
+        loop {
+            let raw = self.raw_block(search_block);
+            let runends_here = raw.runends.count_ones() as u64;
+            
+            if runends_here >= remaining {
+                if let Some(bit_pos) = raw.runends.select(0.., remaining - 1) {
+                    return (search_block - block_num) * 64 + bit_pos + 1;
+                }
+            }
+            
+            remaining -= runends_here;
+            search_block += 1;
+            
+            if search_block >= block_num + total_blocks {
+                debug_assert!(false, "calc_offset: couldn't find enough runends");
+                return 0;
+            }
+        }
     }
 
     /// Start idx of of the run (inclusive)
